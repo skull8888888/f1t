@@ -54,11 +54,12 @@ public:
     cv::Mat bw;
     cv::cvtColor(cv_ptr->image, bw, CV_RGB2GRAY);
     
-    int lowThreshold = 100;
+    int lowThreshold = 50;
     int kernel_size = 3;
     const int ratio = 2;
     cv::Canny(bw, bw, lowThreshold, lowThreshold*ratio, kernel_size);
-    // cv::inRange(bw, cv::Scalar(160), cv::Scalar(180), bw);
+    // cv::inRange(bw, cv::Scalar(0, 0, 0), cv::Scalar(20, int(255 * 0.1), int(255*0.1)), bw);
+    // cv::inRange(bw, cv::Scalar(0, ), cv::Scalar(20, int(255 * 0.1), int(255*0.1)), bw);
     // Update GUI Window
     cv::imshow(OPENCV_WINDOW, bw);
     cv::waitKey(3);
