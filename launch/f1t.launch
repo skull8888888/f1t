@@ -11,7 +11,7 @@
   <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
 
   <!-- external imu -->
-  <include file="$(find myahrs_driver)/launch/myahrs_driver.launch" />
+  <!-- <include file="$(find myahrs_driver)/launch/myahrs_driver.launch" /> -->
 
   <!-- main node -->
   <!-- <node name="image_converter" pkg="f1t" type="image_converter"/> -->
