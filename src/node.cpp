@@ -8,6 +8,8 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CompressedImage.h>
  
+#include <vector>
+
 static const std::string OPENCV_WINDOW = "Image window";
 
 class ImageConverter
@@ -45,28 +47,97 @@ public:
       return;
     }
 
-    // Draw an example circle on the video stream
-    if (cv_ptr->image.rows > 60 && cv_ptr->image.cols > 60)
-      cv::circle(cv_ptr->image, cv::Point(50, 50), 10, CV_RGB(255,0,0));
-
-
-
-    cv::Mat bw;
-    cv::cvtColor(cv_ptr->image, bw, CV_RGB2HSV);
+    cv::Mat out_img;
+    cv::cvtColor(cv_ptr->image, out_img, CV_RGB2HSV);
     
     int lowThreshold = 50;
     int kernel_size = 3;
     const int ratio = 2;
-    // cv::Canny(bw, bw, lowThreshold, lowThreshold*ratio, kernel_size);
-    cv::inRange(bw, cv::Scalar(14, 80, 60), cv::Scalar(120, 255, 255), bw);
-    // cv::inRange(bw, cv::Scalar(0, ), cv::Scalar(20, int(255 * 0.1), int(255*0.1)), bw);
-    // Update GUI Window
-    cv::imshow(OPENCV_WINDOW, bw);
+    cv::inRange(out_img, cv::Scalar(14, 140, 60), cv::Scalar(120, 255, 255), out_img);
+    cv::Canny(out_img, out_img, lowThreshold, lowThreshold*ratio, kernel_size);
+
+    float portion = 0.56;
+
+    cv::Size out_size = out_img.size();
+
+    cv::Mat mask = cv::Mat::zeros(out_size, out_img.type());
+    mask(cv::Rect(0, out_size.height * portion, out_size.width, out_size.height * (1-portion))) = 255;
+    cv::bitwise_and(out_img, mask, out_img);
+
+
+    // line detection 
+    std::vector<cv::Vec4i> lines;
+    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 60, 50, 200);
+
+
+    std::vector<cv::Vec2d> left_lines;
+    std::vector<cv::Vec2d> right_lines;
+
+    for(auto line: lines) {
+      
+      double slope = double(line[3]-line[1]) / double(line[2]-line[0]);
+      
+      double y_inter = double(line[1]) - slope*double(line[0]);
+  
+      if(slope < 0) {
+        left_lines.push_back(cv::Vec2d(slope, y_inter));
+      } else {
+        right_lines.push_back(cv::Vec2d(slope, y_inter));
+        
+      }
+
+    }
+
+    // averaging lines 
+
+    if(right_lines.size() > 0) {
+
+      cv::Scalar right_mean = cv::mean(right_lines);
+      double right_mean_slope = right_mean[0];
+      double right_mean_inter = right_mean[1];
+
+      cv::line(
+          cv_ptr->image, 
+          cv::Point(out_size.width/2, int(out_size.width/2 * right_mean_slope + right_mean_inter)),
+          cv::Point(out_size.width, int(out_size.width * right_mean_slope + right_mean_inter)), 
+          cv::Scalar(255,0,0), 
+          16, 
+          8);
+
+    }
+
+    cv::Scalar left_mean = cv::mean(left_lines);
+    double left_mean_slope = left_mean[0];
+    double left_mean_inter = left_mean[1];
+
+    if(left_lines.size() > 0) {
+    
+      cv::line(
+          cv_ptr->image, 
+          cv::Point(0, int(left_mean_inter)),
+          cv::Point(out_size.width/2, int(out_size.width/2 * left_mean_slope + left_mean_inter)), 
+          cv::Scalar(0,0,255), 
+          16, 
+          8);
+    }
+
+    //////////////////////////////////////////////////
+
+
+    
+    cv::imshow(OPENCV_WINDOW, out_img);
     cv::waitKey(3);
 
     // Output modified video stream
     image_pub_.publish(cv_ptr->toImageMsg());
   }
+
+  void steer(){
+
+    
+  }
+
+
 };
 
 int main(int argc, char** argv)
