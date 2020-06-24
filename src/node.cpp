@@ -8,6 +8,9 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CompressedImage.h>
  
+#include "std_msgs/Int16.h"
+#include <math.h>  
+
 #include <vector>
 
 static const std::string OPENCV_WINDOW = "Image window";
@@ -19,11 +22,15 @@ class ImageConverter
   image_transport::Subscriber image_sub_;
   image_transport::Publisher image_pub_;
 
+  ros::Publisher steer_pub_;
+
 public:
   ImageConverter(): it_(nh_) {
     // Subscrive to input video feed and publish output video feed
     image_sub_ = it_.subscribe("/camera/color/image_raw", 1, &ImageConverter::imageCb, this);
     image_pub_ = it_.advertise("/image_converter/output_video", 1);
+    
+    steer_pub_ = nh_.advertise<std_msgs::Int16>("/rc_cmd/steer",1);
 
     cv::namedWindow(OPENCV_WINDOW);
   }
@@ -89,16 +96,20 @@ public:
     }
 
     // averaging lines 
+    int right_x = -1;
+    int left_x = -1;
 
     if(right_lines.size() > 0) {
 
       cv::Scalar right_mean = cv::mean(right_lines);
       double right_mean_slope = right_mean[0];
       double right_mean_inter = right_mean[1];
+      
+      right_x = int(std::max(0.0,(out_size.height * portion - right_mean_inter) / right_mean_slope));
 
-      cv::line(
+      cv::line( 
           cv_ptr->image, 
-          cv::Point(out_size.width/2, int(out_size.width/2 * right_mean_slope + right_mean_inter)),
+          cv::Point(right_x, int(out_size.height * portion)),
           cv::Point(out_size.width, int(out_size.width * right_mean_slope + right_mean_inter)), 
           cv::Scalar(255,0,0), 
           16, 
@@ -106,16 +117,18 @@ public:
 
     }
 
-    cv::Scalar left_mean = cv::mean(left_lines);
-    double left_mean_slope = left_mean[0];
-    double left_mean_inter = left_mean[1];
-
     if(left_lines.size() > 0) {
-    
+      
+      cv::Scalar left_mean = cv::mean(left_lines);
+      double left_mean_slope = left_mean[0];
+      double left_mean_inter = left_mean[1];
+
+      left_x = int(std::max(0.0,(out_size.height * portion - left_mean_inter) / left_mean_slope));
+
       cv::line(
           cv_ptr->image, 
           cv::Point(0, int(left_mean_inter)),
-          cv::Point(out_size.width/2, int(out_size.width/2 * left_mean_slope + left_mean_inter)), 
+          cv::Point(left_x, int(out_size.height * portion)),
           cv::Scalar(0,0,255), 
           16, 
           8);
@@ -123,7 +136,26 @@ public:
 
     //////////////////////////////////////////////////
 
+    if(left_x >= 0 && right_x >= 0) {
 
+      cv::line(
+        cv_ptr->image, 
+        cv::Point((left_x + right_x) / 2, int(out_size.height * portion)),
+        cv::Point(out_size.width/2, out_size.height),
+        cv::Scalar(0,255,0), 
+        16, 
+        8);
+
+    } else {
+
+      cv::line(
+        cv_ptr->image, 
+        cv::Point( out_size.width / 2 - right_x, int(out_size.height * portion)),
+        cv::Point(out_size.width/2, out_size.height),
+        cv::Scalar(0,255,0), 
+        16, 
+        8);
+    }
     
     cv::imshow(OPENCV_WINDOW, out_img);
     cv::waitKey(3);
