@@ -9,6 +9,7 @@
 #include <sensor_msgs/CompressedImage.h>
  
 #include "std_msgs/Int16.h"
+#include "std_msgs/Bool.h"
 #include <math.h>  
 
 #include <vector>
@@ -23,6 +24,7 @@ class ImageConverter
   image_transport::Publisher image_pub_;
 
   ros::Publisher steer_pub_;
+  ros::Publisher mode_pub_;
 
   double steer_value;
 
@@ -32,8 +34,14 @@ public:
     image_sub_ = it_.subscribe("/camera/color/image_raw", 1, &ImageConverter::imageCb, this);
     image_pub_ = it_.advertise("/image_converter/output_video", 1);
     
-    steer_pub_ = nh_.advertise<std_msgs::Int16>("/rc_cmd/steer",1);
+    mode_pub_ = nh_.advertise<std_msgs::Bool>("/auto_mode",1);
+    steer_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/steer",5);
 
+
+    std_msgs::Bool msg;
+    msg.data = true;
+
+    mode_pub_.publish(msg);  
     cv::namedWindow(OPENCV_WINDOW);
   }
 
@@ -76,7 +84,7 @@ public:
 
     // line detection 
     std::vector<cv::Vec4i> lines;
-    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 60, 50, 200);
+    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 60, 60, 100);
 
 
     std::vector<cv::Vec2d> left_lines;
@@ -187,7 +195,7 @@ public:
       p = -(1.0 + angle / 90.0);
     }
 
-    double steer = int(1520.0 + 400.0 * p);
+    double steer = int(1500.0 + 400.0 * p);
     std_msgs::Int16 msg;
     msg.data = steer;
 
