@@ -24,6 +24,8 @@ class ImageConverter
 
   ros::Publisher steer_pub_;
 
+  double steer_value;
+
 public:
   ImageConverter(): it_(nh_) {
     // Subscrive to input video feed and publish output video feed
@@ -99,10 +101,12 @@ public:
     int right_x = -1;
     int left_x = -1;
 
+    double right_mean_slope = 0;
+
     if(right_lines.size() > 0) {
 
       cv::Scalar right_mean = cv::mean(right_lines);
-      double right_mean_slope = right_mean[0];
+      right_mean_slope = right_mean[0];
       double right_mean_inter = right_mean[1];
       
       right_x = int(std::max(0.0,(out_size.height * portion - right_mean_inter) / right_mean_slope));
@@ -135,8 +139,12 @@ public:
     }
 
     //////////////////////////////////////////////////
+    
+    double middle_slope = 0;
 
     if(left_x >= 0 && right_x >= 0) {
+
+      middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
 
       cv::line(
         cv_ptr->image, 
@@ -147,6 +155,8 @@ public:
         8);
 
     } else {
+      
+      middle_slope = -right_mean_slope;
 
       cv::line(
         cv_ptr->image, 
@@ -157,16 +167,34 @@ public:
         8);
     }
     
+    steer(middle_slope);
+    
+
     cv::imshow(OPENCV_WINDOW, out_img);
     cv::waitKey(3);
-
+    
     // Output modified video stream
     image_pub_.publish(cv_ptr->toImageMsg());
   }
 
-  void steer(){
+  void steer(double slope){
 
-    
+    double angle = atan(slope) * 180 / M_PI;
+    double p = 0;
+    if(angle > 0) {
+      p = 1.0 - angle / 90.0;
+    } else {
+      p = -(1.0 + angle / 90.0);
+    }
+
+    double steer = int(1520.0 + 400.0 * p);
+    std_msgs::Int16 msg;
+    msg.data = steer;
+
+    steer_pub_.publish(msg);
+
+    // ROS_INFO("%f %f", atan(slope) * 180 / M_PI, steer);
+
   }
 
 
