@@ -26,7 +26,7 @@ class ImageConverter
   ros::Publisher steer_pub_;
   ros::Publisher mode_pub_;
 
-  double steer_value;
+  double steer_value = 0;
 
 public:
   ImageConverter(): it_(nh_) {
@@ -110,6 +110,7 @@ public:
     int left_x = -1;
 
     double right_mean_slope = 0;
+    double left_mean_slope = 0;
 
     if(right_lines.size() > 0) {
 
@@ -132,7 +133,7 @@ public:
     if(left_lines.size() > 0) {
       
       cv::Scalar left_mean = cv::mean(left_lines);
-      double left_mean_slope = left_mean[0];
+      left_mean_slope = left_mean[0];
       double left_mean_inter = left_mean[1];
 
       left_x = int(std::max(0.0,(out_size.height * portion - left_mean_inter) / left_mean_slope));
@@ -148,23 +149,28 @@ public:
 
     //////////////////////////////////////////////////
     
-    double middle_slope = 0;
 
     if(left_x >= 0 && right_x >= 0) {
-
-      middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
-
-      cv::line(
-        cv_ptr->image, 
-        cv::Point((left_x + right_x) / 2, int(out_size.height * portion)),
-        cv::Point(out_size.width/2, out_size.height),
-        cv::Scalar(0,255,0), 
-        16, 
-        8);
-
-    } else {
       
-      middle_slope = -right_mean_slope;
+      if(right_x < out_size.width / 2){
+        steer(left_mean_slope);
+      } else {
+      
+        double middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
+        
+        steer(middle_slope);
+
+        cv::line(
+          cv_ptr->image, 
+          cv::Point((left_x + right_x) / 2, int(out_size.height * portion)),
+          cv::Point(out_size.width/2, out_size.height),
+          cv::Scalar(0,255,0), 
+          16, 
+          8);
+      }
+    } else if (right_x >= 0 && left_x == -1) {
+      
+      steer(-right_mean_slope);
 
       cv::line(
         cv_ptr->image, 
@@ -174,10 +180,7 @@ public:
         16, 
         8);
     }
-    
-    steer(middle_slope);
-    
-
+  
     cv::imshow(OPENCV_WINDOW, out_img);
     cv::waitKey(3);
     
@@ -196,8 +199,21 @@ public:
     }
 
     double steer = int(1500.0 + 400.0 * p);
+
+    if(abs(steer - steer_value) > 50) {
+      
+      if(steer < 0) {
+        steer_value -= 50
+      } else {
+        steer_value += 50  
+      }
+
+    } else {
+      steer_value = steer;
+    }
+
     std_msgs::Int16 msg;
-    msg.data = steer;
+    msg.data = steer_value;
 
     steer_pub_.publish(msg);
 
