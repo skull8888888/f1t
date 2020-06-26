@@ -87,7 +87,7 @@ public:
 
     // line detection 
     std::vector<cv::Vec4i> lines;
-    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 50, 10, 20);
+    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 60, 20, 20);
 
 
     std::vector<cv::Vec2d> left_lines;
@@ -173,7 +173,7 @@ public:
     //////////////////////////////////////////////////
     
 
-    if(left_lines.size() > 0 && right_lines.size() > 0 && middle_lines.size() == 0) {
+    if(middle_lines.size() == 0 && left_lines.size() > 0 && right_lines.size() > 0) {
       
       if(right_x < out_size.width / 2){
         steer(-right_mean_slope);
@@ -192,19 +192,25 @@ public:
           8);
       }
     } else if (middle_lines.size() > 0 && left_lines.size() == 0 && right_lines.size() == 0) {
-      
-      steer(-right_mean_slope);
+      // only middle
+      std_msgs::Int16 msg;
+      steer_value = std::max(1100, steer_value - 3);
+      msg.data = steer_value;
 
-      cv::line(
-        cv_ptr->image, 
-        cv::Point( out_size.width / 2 - right_x, int(out_size.height * portion)),
-        cv::Point(out_size.width/2, out_size.height),
-        cv::Scalar(0,255,0), 
-        16, 
-        8);
-    } else if (middle_lines.size() == 0 && left_lines.size() > 0 && right_lines.size() == 0){
-      steer(left_mean_slope);
-    } else if (middle_lines.size() == 0 && left_lines.size() == 0 && right_lines.size() > 0){
+      steer_pub_.publish(msg);
+
+      int throttle_value = 1455;
+
+      std_msgs::Int16 throttle_msg;
+      throttle_msg.data = throttle_value;
+
+      throttle_pub_.publish(throttle_msg);
+
+      
+
+    } else if (left_lines.size() > 0 && right_lines.size() == 0){
+      steer(-left_mean_slope);
+    } else if (left_lines.size() == 0 && right_lines.size() > 0){
       steer(-right_mean_slope);
     } else {
       steer(INFINITY);
@@ -220,7 +226,7 @@ public:
   void steer(double slope){
 
     double angle = atan(slope) * 180 / M_PI;
-    ROS_INFO("%f", angle);
+    // ROS_INFO("%f", angle);
     double p = 0;
     if(angle > 0) {
       p = 1.0 - angle / 90.0;
@@ -230,25 +236,21 @@ public:
 
     int steer = int(1500.0 + 400.0 * p);
     int dev_steer = 50;
-
-    // if(abs(steer - steer_value) > 100) {
-      
-    //   if(steer < 0) {
-    //     steer_value -= dev_steer;
-    //   } else {
-    //     steer_value += dev_steer; 
-    //   }
-
+    
+    // ROS_INFO("STEER  %d  %d", steer_value, steer);
+    // if(abs(steer - steer_value) > 200) {
+    //   ROS_INFO("STEER SPIKE  %d  %d", steer_value, steer);
     // } else {
     //   steer_value = steer;
     // }
 
+    steer_value = steer;
     std_msgs::Int16 msg;
-    msg.data = steer;
+    msg.data = steer_value;
 
     steer_pub_.publish(msg);
 
-    int throttle_value = 1490 - 5 * (1-abs(p));
+    int throttle_value = 1455 - 10 * (1-abs(p));
 
     std_msgs::Int16 throttle_msg;
     throttle_msg.data = throttle_value;
