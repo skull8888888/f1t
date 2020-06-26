@@ -24,9 +24,11 @@ class ImageConverter
   image_transport::Publisher image_pub_;
 
   ros::Publisher steer_pub_;
-  ros::Publisher mode_pub_;
+  ros::Publisher throttle_pub_;
 
-  double steer_value = 0;
+  ros::Publisher mode_pub_;
+  
+  int steer_value = 1500;
 
 public:
   ImageConverter(): it_(nh_) {
@@ -36,6 +38,7 @@ public:
     
     mode_pub_ = nh_.advertise<std_msgs::Bool>("/auto_mode",1);
     steer_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/steer",5);
+    throttle_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/throttle",5);
 
 
     std_msgs::Bool msg;
@@ -84,10 +87,11 @@ public:
 
     // line detection 
     std::vector<cv::Vec4i> lines;
-    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 60, 60, 100);
+    cv::HoughLinesP(out_img, lines, 1, CV_PI/180, 50, 10, 20);
 
 
     std::vector<cv::Vec2d> left_lines;
+    std::vector<cv::Vec2d> middle_lines;
     std::vector<cv::Vec2d> right_lines;
 
     for(auto line: lines) {
@@ -98,9 +102,10 @@ public:
   
       if(slope < 0) {
         left_lines.push_back(cv::Vec2d(slope, y_inter));
-      } else {
+      } else if (slope > 0.1) {
         right_lines.push_back(cv::Vec2d(slope, y_inter));
-        
+      } else {
+        middle_lines.push_back(cv::Vec2d(slope, y_inter));  
       }
 
     }
@@ -147,13 +152,31 @@ public:
           8);
     }
 
+    if(middle_lines.size() > 0) {
+      
+      cv::Scalar middle_mean = cv::mean(middle_lines);
+      double middle_mean_slope = middle_mean[0];
+      double middle_mean_inter = middle_mean[1];
+
+      int middle_x = int(std::max(0.0,(out_size.height * portion - middle_mean_inter) / middle_mean_slope));
+
+      cv::line( 
+          cv_ptr->image, 
+          cv::Point(middle_x, int(out_size.height * portion)),
+          cv::Point(out_size.width, int(out_size.width * middle_mean_slope + middle_mean_inter)), 
+          cv::Scalar(255,255,0), 
+          16, 
+          8);
+
+    }
+
     //////////////////////////////////////////////////
     
 
-    if(left_x >= 0 && right_x >= 0) {
+    if(left_lines.size() > 0 && right_lines.size() > 0 && middle_lines.size() == 0) {
       
       if(right_x < out_size.width / 2){
-        steer(left_mean_slope);
+        steer(-right_mean_slope);
       } else {
       
         double middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
@@ -168,7 +191,7 @@ public:
           16, 
           8);
       }
-    } else if (right_x >= 0 && left_x == -1) {
+    } else if (middle_lines.size() > 0 && left_lines.size() == 0 && right_lines.size() == 0) {
       
       steer(-right_mean_slope);
 
@@ -179,6 +202,12 @@ public:
         cv::Scalar(0,255,0), 
         16, 
         8);
+    } else if (middle_lines.size() == 0 && left_lines.size() > 0 && right_lines.size() == 0){
+      steer(left_mean_slope);
+    } else if (middle_lines.size() == 0 && left_lines.size() == 0 && right_lines.size() > 0){
+      steer(-right_mean_slope);
+    } else {
+      steer(INFINITY);
     }
   
     cv::imshow(OPENCV_WINDOW, out_img);
@@ -191,6 +220,7 @@ public:
   void steer(double slope){
 
     double angle = atan(slope) * 180 / M_PI;
+    ROS_INFO("%f", angle);
     double p = 0;
     if(angle > 0) {
       p = 1.0 - angle / 90.0;
@@ -198,24 +228,32 @@ public:
       p = -(1.0 + angle / 90.0);
     }
 
-    double steer = int(1500.0 + 400.0 * p);
+    int steer = int(1500.0 + 400.0 * p);
+    int dev_steer = 50;
 
-    if(abs(steer - steer_value) > 50) {
+    // if(abs(steer - steer_value) > 100) {
       
-      if(steer < 0) {
-        steer_value -= 50
-      } else {
-        steer_value += 50  
-      }
+    //   if(steer < 0) {
+    //     steer_value -= dev_steer;
+    //   } else {
+    //     steer_value += dev_steer; 
+    //   }
 
-    } else {
-      steer_value = steer;
-    }
+    // } else {
+    //   steer_value = steer;
+    // }
 
     std_msgs::Int16 msg;
-    msg.data = steer_value;
+    msg.data = steer;
 
     steer_pub_.publish(msg);
+
+    int throttle_value = 1490 - 5 * (1-abs(p));
+
+    std_msgs::Int16 throttle_msg;
+    throttle_msg.data = throttle_value;
+
+    throttle_pub_.publish(throttle_msg);
 
     // ROS_INFO("%f %f", atan(slope) * 180 / M_PI, steer);
 
