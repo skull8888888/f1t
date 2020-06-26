@@ -70,6 +70,13 @@ public:
     cv::Mat out_img;
     cv::cvtColor(cv_ptr->image, out_img, CV_RGB2HSV);
     
+    cv::Mat mask1, mask2;
+
+    cv::inRange(out_img, cv::Scalar(0, 70, 50), cv::Scalar(10, 255, 255), mask1);
+    cv::inRange(out_img, cv::Scalar(170, 70, 50), cv::Scalar(180, 255, 255), mask2);
+
+    cv::Mat red_img = mask1 | mask2;
+
     int lowThreshold = 50;
     int kernel_size = 3;
     const int ratio = 2;
@@ -83,7 +90,20 @@ public:
     cv::Mat mask = cv::Mat::zeros(out_size, out_img.type());
     mask(cv::Rect(0, out_size.height * portion, out_size.width, out_size.height * (1-portion))) = 255;
     cv::bitwise_and(out_img, mask, out_img);
+    
+    double red_portion = 0.4;
 
+    cv::Mat red_mask = cv::Mat::zeros(out_size, out_img.type());
+    red_mask(cv::Rect(out_size.width / 2 , out_size.height * red_portion, out_size.width / 2, out_size.height * (1-red_portion))) = 255;
+    
+    cv::bitwise_and(red_img, red_mask, red_img);
+    
+    cv::Scalar red_sum = cv::sum(red_img);
+
+    ROS_INFO("red %f", red_sum[0]);
+
+    cv::imshow(OPENCV_WINDOW, red_img);
+    cv::waitKey(3);
 
     // line detection 
     std::vector<cv::Vec4i> lines;
@@ -216,9 +236,6 @@ public:
       steer(INFINITY);
     }
   
-    cv::imshow(OPENCV_WINDOW, out_img);
-    cv::waitKey(3);
-    
     // Output modified video stream
     image_pub_.publish(cv_ptr->toImageMsg());
   }
