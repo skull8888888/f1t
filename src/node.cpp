@@ -98,11 +98,11 @@ public:
     
     cv::bitwise_and(red_img, red_mask, red_img);
     
-    cv::Scalar red_sum = cv::sum(red_img);
+    double red_sum = cv::sum(red_img)[0];
 
-    ROS_INFO("red %f", red_sum[0]);
+    // ROS_INFO("red %f", red_sum[0]);
 
-    cv::imshow(OPENCV_WINDOW, red_img);
+    cv::imshow(OPENCV_WINDOW, out_img);
     cv::waitKey(3);
 
     // line detection 
@@ -111,7 +111,7 @@ public:
 
 
     std::vector<cv::Vec2d> left_lines;
-    std::vector<cv::Vec2d> middle_lines;
+    // std::vector<cv::Vec2d> middle_lines;
     std::vector<cv::Vec2d> right_lines;
 
     for(auto line: lines) {
@@ -125,7 +125,7 @@ public:
       } else if (slope > 0.1) {
         right_lines.push_back(cv::Vec2d(slope, y_inter));
       } else {
-        middle_lines.push_back(cv::Vec2d(slope, y_inter));  
+        // middle_lines.push_back(cv::Vec2d(slope, y_inter));  
       }
 
     }
@@ -172,74 +172,77 @@ public:
           8);
     }
 
-    if(middle_lines.size() > 0) {
+    // if(middle_lines.size() > 0) {
       
-      cv::Scalar middle_mean = cv::mean(middle_lines);
-      double middle_mean_slope = middle_mean[0];
-      double middle_mean_inter = middle_mean[1];
+    //   cv::Scalar middle_mean = cv::mean(middle_lines);
+    //   double middle_mean_slope = middle_mean[0];
+    //   double middle_mean_inter = middle_mean[1];
 
-      int middle_x = int(std::max(0.0,(out_size.height * portion - middle_mean_inter) / middle_mean_slope));
+    //   int middle_x = int(std::max(0.0,(out_size.height * portion - middle_mean_inter) / middle_mean_slope));
 
-      cv::line( 
-          cv_ptr->image, 
-          cv::Point(middle_x, int(out_size.height * portion)),
-          cv::Point(out_size.width, int(out_size.width * middle_mean_slope + middle_mean_inter)), 
-          cv::Scalar(255,255,0), 
-          16, 
-          8);
+    //   cv::line( 
+    //       cv_ptr->image, 
+    //       cv::Point(middle_x, int(out_size.height * portion)),
+    //       cv::Point(out_size.width, int(out_size.width * middle_mean_slope + middle_mean_inter)), 
+    //       cv::Scalar(255,255,0), 
+    //       16, 
+    //       8);
 
-    }
+    // }
 
     //////////////////////////////////////////////////
     
+    double red_sum_threshold = 120000.0;
 
-    if(middle_lines.size() == 0 && left_lines.size() > 0 && right_lines.size() > 0) {
+    if(left_lines.size() > 0 && right_lines.size() > 0) {
       
-      if(right_x < out_size.width / 2){
-        steer(-right_mean_slope);
-      } else {
-      
-        double middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
+      double middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
         
-        steer(middle_slope);
+      steer(middle_slope);
 
-        cv::line(
-          cv_ptr->image, 
-          cv::Point((left_x + right_x) / 2, int(out_size.height * portion)),
-          cv::Point(out_size.width/2, out_size.height),
-          cv::Scalar(0,255,0), 
-          16, 
-          8);
-      }
-    } else if (middle_lines.size() > 0 && left_lines.size() == 0 && right_lines.size() == 0) {
-      // only middle
-      std_msgs::Int16 msg;
-      steer_value = std::max(1100, steer_value - 3);
-      msg.data = steer_value;
-
-      steer_pub_.publish(msg);
-
-      int throttle_value = 1455;
-
-      std_msgs::Int16 throttle_msg;
-      throttle_msg.data = throttle_value;
-
-      throttle_pub_.publish(throttle_msg);
-
-      
+      cv::line(
+        cv_ptr->image, 
+        cv::Point((left_x + right_x) / 2, int(out_size.height * portion)),
+        cv::Point(out_size.width/2, out_size.height),
+        cv::Scalar(0,255,0), 
+        16, 
+        8);
 
     } else if (left_lines.size() > 0 && right_lines.size() == 0){
       steer(-left_mean_slope);
     } else if (left_lines.size() == 0 && right_lines.size() > 0){
       steer(-right_mean_slope);
+    } else if(red_sum > red_sum_threshold){
+      steer_value(-400);
     } else {
-      steer(INFINITY);
+      steer_value(0);
     }
   
     // Output modified video stream
     image_pub_.publish(cv_ptr->toImageMsg());
   }
+  void steer_value(int val){
 
+    // ROS_INFO("STEER  %d  %d", steer_value, steer);
+    // if(abs(steer - steer_value) > 200) {
+    //   ROS_INFO("STEER SPIKE  %d  %d", steer_value, steer);
+    // } else {
+    //   steer_value = steer;
+    // }
+
+    std_msgs::Int16 msg;
+    msg.data = 1500 + val;
+
+    steer_pub_.publish(msg);
+
+    int throttle_value = 1455 - int(10 * (1-abs(double(val)/400.0)));
+
+    std_msgs::Int16 throttle_msg;
+    throttle_msg.data = throttle_value;
+
+    throttle_pub_.publish(throttle_msg);
+
+  }
   void steer(double slope){
 
     double angle = atan(slope) * 180 / M_PI;
