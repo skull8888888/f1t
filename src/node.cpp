@@ -27,11 +27,16 @@ class ImageConverter
   ros::Publisher steer_pub_;
   ros::Publisher throttle_pub_;
 
-  ros::Publisher red_pub_;
-
-  ros::Publisher mode_pub_;
 
   int prev_steer = 0;
+
+  int throttle = 0;
+  int dev_steer = 0;
+  int one_lane_steer = 0;
+  int red_threshold = 0;
+
+  double right_slope = 0.0;
+  double left_slope = 0.0;
 
 public:
   ImageConverter(): it_(nh_) {
@@ -39,17 +44,17 @@ public:
     image_sub_ = it_.subscribe("/camera/color/image_raw", 1, &ImageConverter::imageCb, this);
     image_pub_ = it_.advertise("/image_converter/output_video", 1);
     
-    mode_pub_ = nh_.advertise<std_msgs::Bool>("/auto_mode",1);
     steer_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/steer",5);
     throttle_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/throttle",5);
 
-    red_pub_ = nh_.advertise<std_msgs::Int64>("/red",1);
-
-
-    std_msgs::Bool msg;
-    msg.data = true;
-
-    mode_pub_.publish(msg);  
+    nh_.getParam("throttle", throttle);
+    nh_.getParam("dev_steer", dev_steer);
+    nh_.getParam("one_lane_steer", one_lane_steer);
+    nh_.getParam("red_threshold", red_threshold);
+    
+    nh_.getParam("right_slope", right_slope);
+    nh_.getParam("left_slope", left_slope);
+    
     cv::namedWindow(OPENCV_WINDOW);
   }
 
@@ -74,7 +79,7 @@ public:
 
     cv::Mat out_img;
     cv::cvtColor(cv_ptr->image, out_img, CV_RGB2HSV);
-    
+  
     cv::Mat mask1, mask2;
 
     cv::inRange(out_img, cv::Scalar(0, 70, 50), cv::Scalar(10, 255, 255), mask1);
@@ -86,6 +91,7 @@ public:
     int kernel_size = 3;
     const int ratio = 2;
     cv::inRange(out_img, cv::Scalar(14, 140, 60), cv::Scalar(120, 255, 255), out_img);
+    
     cv::Canny(out_img, out_img, lowThreshold, lowThreshold*ratio, kernel_size);
 
     float portion = 0.56;
@@ -96,19 +102,18 @@ public:
     mask(cv::Rect(0, out_size.height * portion, out_size.width, out_size.height * (1-portion))) = 255;
     cv::bitwise_and(out_img, mask, out_img);
     
-    double red_portion = 0.2;
+    double red_portion = 0.3;
 
     cv::Mat red_mask = cv::Mat::zeros(out_size, out_img.type());
-    red_mask(cv::Rect(out_size.width / 8 , out_size.height * red_portion,out_size.width - out_size.width / 8, out_size.height * (1-red_portion))) = 255;
-    
+    red_mask(cv::Rect(out_size.width / 6 , out_size.height * red_portion,out_size.width - out_size.width / 6, out_size.height * (1-red_portion))) = 255;
+
     cv::bitwise_and(red_img, red_mask, red_img);
     
-    double red_sum = cv::sum(red_img)[0];
-
-    // ROS_INFO("red %f", red_sum[0]);
-
-    cv::imshow(OPENCV_WINDOW, out_img);
+    cv::imshow(OPENCV_WINDOW, red_img);
     cv::waitKey(3);
+
+    double red_sum = cv::sum(red_img)[0];
+    ROS_INFO("RED SUM %f", red_sum);
 
     // line detection 
     std::vector<cv::Vec4i> lines;
@@ -124,12 +129,14 @@ public:
       double slope = double(line[3]-line[1]) / double(line[2]-line[0]);
       
       double y_inter = double(line[1]) - slope*double(line[0]);
-  
-      if(slope < -0.12) {
+      
+      ROS_INFO("slope %f %f %f", slope, left_slope, right_slope);
+
+      if(slope < left_slope) {
         left_lines.push_back(cv::Vec2d(slope, y_inter));
-      } else if (slope > 0.12) {
+      } else if (slope > right_slope) {
         right_lines.push_back(cv::Vec2d(slope, y_inter));
-      } else {
+      } else if(slope > left_slope + 0.08 && slope < right_slope - 0.08){
         middle_lines.push_back(cv::Vec2d(slope, y_inter));  
       }
 
@@ -197,11 +204,6 @@ public:
 
     //////////////////////////////////////////////////
     
-    double red_sum_threshold = 1900000.0;
-    std_msgs::Int64 m;
-    m.data = red_sum;
-    red_pub_.publish(m);
-
     if(left_lines.size() > 0 && right_lines.size() > 0) {
       
       double middle_slope = double(out_size.height * portion - out_size.height) / double(out_size.width/2 - (left_x + right_x) / 2);
@@ -215,12 +217,12 @@ public:
         cv::Scalar(0,255,0), 
         16, 
         8);
-    } else if(red_sum > red_sum_threshold && (middle_lines.size() > 0 && left_lines.size() == 0 && right_lines.size() == 0)){
+    } else if(red_sum > red_threshold && (middle_lines.size() > 0)){
       steer_value(-400);
     } else if (left_lines.size() > 0 && right_lines.size() == 0){
-      steer(-left_mean_slope);
+      steer_value(one_lane_steer);
     } else if (left_lines.size() == 0 && right_lines.size() > 0){
-      steer(-right_mean_slope);
+      steer_value(-one_lane_steer);
     } else {
       // steer_value(0);
     }
@@ -230,14 +232,9 @@ public:
   }
   void steer_value(int val){
 
-    // ROS_INFO("STEER  %d  %d", steer_value, steer);
-    // if(abs(steer - steer_value) > 200) {
-    //   ROS_INFO("STEER SPIKE  %d  %d", steer_value, steer);
-    // } else {
-    //   steer_value = steer;
-    // }
+    ROS_INFO("%d", val);
 
-    if (abs(prev_steer - val) < 700) {
+    if (abs(prev_steer - val) < dev_steer) {
       prev_steer = val;
     } 
 
@@ -246,14 +243,14 @@ public:
 
     steer_pub_.publish(msg);
 
-    int throttle_value = 1460 - int(10 * (1-abs(double(val)/400.0)));
 
     std_msgs::Int16 throttle_msg;
-    throttle_msg.data = throttle_value;
+    throttle_msg.data = throttle;
 
     throttle_pub_.publish(throttle_msg);
 
   }
+
   void steer(double slope){
 
     double angle = atan(slope) * 180 / M_PI;
@@ -265,15 +262,7 @@ public:
       p = -(1.0 + angle / 90.0);
     }
 
-    int adj = 180;
-    int steer = int(p*400);
-    if(steer > 0) {
-      steer = std::max(0, steer - adj);
-    } else {
-
-      steer = std::min(0, steer + adj);
-    }
-    steer_value(steer);
+    steer_value(p * 400);
 
   }
 

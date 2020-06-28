@@ -1,18 +1,28 @@
 <launch>
+
   <!-- Launch rosserial -->
 
-<!-- sudo chmod 777 /dev/ttyUSB0 -->
-  <node name="arduino_serial_node" pkg="rosserial_python" type="serial_node.py">
+  <!-- sudo chmod 777 /dev/ttyUSB0 -->
+  <!-- <node name="arduino_serial_node" pkg="rosserial_python" type="serial_node.py">
     <param name="port" value="/dev/ttyUSB0" />
     <param name="baud" value="57600" />
-  </node>
+  </node> -->
 
   <!-- Launch realsense camera -->
-  <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
+  <!-- <include file="$(find realsense2_camera)/launch/rs_camera.launch" /> -->
 
   <!-- external imu -->
   <!-- <include file="$(find myahrs_driver)/launch/myahrs_driver.launch" /> -->
 
   <!-- main node -->
-  <node name="image_converter" pkg="f1t" type="image_converter"/>
+  <param name="throttle" value="1460"/>
+  <param name="red_threshold" value="1600000"/>
+  <param name="dev_steer" value="800" />
+  <param name="one_lane_steer" value="100"/>
+  
+  <param name="right_slope" value="0.12"/>
+  <param name="left_slope" value="-0.12"/>
+  
+
+  <node name="image_converter" pkg="f1t" type="image_converter"  output="screen"/>
 </launch>
