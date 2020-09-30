@@ -1,0 +1,9 @@
+<launch>
+  
+  <node pkg="rosbag" type="play" name="player" args="--clock /home/user/catkin_ws/bag/run2.bag"/>
+
+  <node name="image_saver" pkg="image_view" type="image_saver" output="screen" args="image:=/image_converter/image"/>
+  
+  <node name="image_converter" pkg="f1t" type="image_converter" output="screen"/>
+
+</launch> 

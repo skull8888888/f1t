@@ -17,9 +17,11 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 set(Torch_DIR /home/user/Downloads/libtorch/)
-set(CUDA_INCLUDE_LIB /usr/lib/cuda/include)
+
+# download binaries from https://github.com/pytorch/pytorch/issues/17492#issuecomment-524692441
 
 find_package(Torch REQUIRED)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 ## System dependencies are found with CMake's conventions
 find_package(OpenCV REQUIRED)
@@ -130,6 +132,7 @@ include_directories(
 # include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${Torch_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -163,7 +166,7 @@ include_directories(
 # )
 
 add_executable(image_converter src/bw_converter.cpp)
-target_link_libraries(image_converter ${catkin_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(image_converter ${OpenCV_LIBS} ${TORCH_LIBRARIES} ${catkin_LIBRARIES})
 # add_dependencies(talker beginner_tutorials_generate_messages_cpp)
 
 #############
