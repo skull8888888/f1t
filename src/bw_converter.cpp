@@ -18,7 +18,8 @@
 
 #include <torch/script.h>
 
-// #include <memory>
+#include <iostream>
+#include <memory>
 
 static const std::string OPENCV_WINDOW = "Image window";
 
@@ -43,6 +44,8 @@ class ImageConverter
   double right_slope = 0.0;
   double left_slope = 0.0;
 
+  std::string model_path;
+
 public:
   ImageConverter(): it_(nh_) {
     // Subscrive to input video feed and publish output video feed
@@ -60,8 +63,29 @@ public:
     nh_.getParam("right_slope", right_slope);
     nh_.getParam("left_slope", left_slope);
     
+    nh_.getParam("model_path", model_path);
+
     cv::namedWindow(OPENCV_WINDOW);
     cv::startWindowThread();  
+
+    torch::jit::script::Module module;
+    try {
+        // Deserialize the ScriptModule from a file using torch::jit::load().
+      module = torch::jit::load("/home/user/catkin_ws/src/f1t/jn/balanced.pt");
+    }
+    catch (const c10::Error& e) {
+      std::cerr << e.what();
+    }
+
+    torch::Device device(torch::kCUDA);
+
+    std::vector<torch::jit::IValue> inputs;
+    inputs.push_back(torch::ones({1, 3, 120, 320}, device));
+
+    // Execute the model and turn its output into a tensor.
+    at::Tensor output = module.forward(inputs).toTensor();
+    std::cout << output.slice(/*dim=*/1, /*start=*/0, /*end=*/5) << '\n';
+
   }
 
   ~ImageConverter()

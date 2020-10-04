@@ -16,11 +16,13 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
 )
 
-set(Torch_DIR /home/user/Downloads/libtorch/)
+# set(CUDNN_INCLUDE_PATH /usr/local/cuda/include)
+set(Torch_DIR /home/user/Downloads/libtorch/share/cmake/Torch)
+
+find_package(Torch REQUIRED)
 
 # download binaries from https://github.com/pytorch/pytorch/issues/17492#issuecomment-524692441
 
-find_package(Torch REQUIRED)
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 ## System dependencies are found with CMake's conventions
