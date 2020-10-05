@@ -16,11 +16,6 @@
 #include <string>
 #include <vector>
 
-#include <torch/script.h>
-
-#include <iostream>
-#include <memory>
-
 static const std::string OPENCV_WINDOW = "Image window";
 
 class ImageConverter
@@ -67,24 +62,6 @@ public:
 
     cv::namedWindow(OPENCV_WINDOW);
     cv::startWindowThread();  
-
-    torch::jit::script::Module module;
-    try {
-        // Deserialize the ScriptModule from a file using torch::jit::load().
-      module = torch::jit::load("/home/user/catkin_ws/src/f1t/jn/balanced.pt");
-    }
-    catch (const c10::Error& e) {
-      std::cerr << e.what();
-    }
-
-    torch::Device device(torch::kCUDA);
-
-    std::vector<torch::jit::IValue> inputs;
-    inputs.push_back(torch::ones({1, 3, 120, 320}, device));
-
-    // Execute the model and turn its output into a tensor.
-    at::Tensor output = module.forward(inputs).toTensor();
-    std::cout << output.slice(/*dim=*/1, /*start=*/0, /*end=*/5) << '\n';
 
   }
 
