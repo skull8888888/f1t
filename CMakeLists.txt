@@ -14,7 +14,10 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   image_transport
   sensor_msgs
+  message_filters
 )
+
+# rosbuild_link_boost(f1t thread signals system)
 
 # set(CUDNN_INCLUDE_PATH /usr/local/cuda/include)
 set(Torch_DIR /home/user/Downloads/libtorch/share/cmake/Torch)
@@ -35,6 +38,7 @@ CATKIN_DEPENDS roscpp
                sensor_msgs
                cv_bridge
                image_transport
+               message_filters
 )
 
 ###########
@@ -51,12 +55,10 @@ include_directories(
 add_executable(image_converter src/image_converter.cpp)
 target_link_libraries(image_converter ${OpenCV_LIBS} ${catkin_LIBRARIES})
 
-
 add_executable(model_node src/model_node.cpp)
 target_link_libraries(model_node ${OpenCV_LIBS} ${TORCH_LIBRARIES} ${catkin_LIBRARIES})
 
-
 # catkin_install_python(PROGRAMS
-#   scripts/model.py
+#   scripts/converter.py
 #   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )

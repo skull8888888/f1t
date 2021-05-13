@@ -16,12 +16,18 @@
 #include <string>
 #include <vector>
 
+#include <torch/data.h>
 #include <torch/script.h>
 
 #include <iostream>
+#include <fstream>
 #include <memory>
 
 static const std::string OPENCV_WINDOW = "Image window";
+
+int SEQ_L = 8;
+
+std::ofstream myfile;
 
 class ModelNode
 {
@@ -35,9 +41,12 @@ class ModelNode
 
   std::string model_path;
 
-
-  torch::jit::script::Module module;
+  torch::jit::script::Module backbone;
+  torch::jit::script::Module decoder;
   
+  std::vector<at::Tensor> frames_cache;
+  std::vector<at::Tensor> angles_cache;
+ 
 public:
   ModelNode() {
     // Subscribe to input video
@@ -49,32 +58,34 @@ public:
     nh_.getParam("model_path", model_path);
 
     try {
-        // Deserialize the ScriptModule from a file using torch::jit::load().
-      module = torch::jit::load("/home/user/catkin_ws/src/f1t/jn/balanced.pt");
-      module.eval();
+
+      torch::Device device(torch::kCUDA);
+
+      backbone = torch::jit::load("/home/user/catkin_ws/src/f1t/backbone_script.pt");
+      
+      backbone.to(device);
+      backbone.eval();
+
+      decoder = torch::jit::load("/home/user/catkin_ws/src/f1t/decoder_script.pt");
+
+      decoder.to(device);
+      decoder.eval();
+    
     }
     catch (const c10::Error& e) {
       std::cerr << e.what();
     }
-
-
-    // std::vector<torch::jit::IValue> inputs;
-    // inputs.push_back(torch::ones({1, 3, 120, 320}, device));
-
-    // Execute the model and turn its output into a tensor.
-    // std::cout << output.slice(/*dim=*/1, /*start=*/0, /*end=*/5) << '\n';
     
     cv::namedWindow(OPENCV_WINDOW);
     cv::startWindowThread();  
 
-    // cv::Mat img = cv::imread("/home/user/catkin_ws/images/test/left0000.jpg");
-    // model_forward(img);
-
+		myfile.open("/home/user/catkin_ws/src/f1t/val_pred.csv");
   }
 
   ~ModelNode()
   {
     cv::destroyWindow(OPENCV_WINDOW);
+		myfile.close();
   }
 
   void imageCb(const sensor_msgs::CompressedImageConstPtr& msg)
@@ -92,19 +103,42 @@ public:
     }
 
     cv::Mat img = cv_ptr->image;
-    model_forward(img);
-    // sensor_msgs::ImagePtr out_msg = cv_bridge::CvImage(std_msgs::Header(), sensor_msgs::image_encodings::MONO8, img).toImageMsg();
-    // image_pub_.publish(out_msg);   
+    at::Tensor img_emb = backbone_forward(img);
 
-    //////////////////////////////////////////////////
-    
+    this->frames_cache.push_back(img_emb.detach());
+
+		if(this->frames_cache.size() < SEQ_L){
+
+			this->angles_cache.push_back(torch::tensor({0.0}).to(at::kCUDA));
+			return;
+		}
+
+		torch::Tensor x = torch::stack(this->frames_cache, 1);
+		torch::Tensor steer_angles = torch::stack(this->angles_cache);
+		steer_angles = torch::transpose(steer_angles, 0,1);
+
+		std::vector<torch::jit::IValue> inputs = {x, steer_angles};
+		
+		torch::Tensor y = this->decoder.forward(inputs).toTensor().flatten().detach();
+		y = torch::clamp(y, -1.0, 1.0); 
+
+		float current_steer = y.item<float>();
+		
+		myfile << std::to_string(current_steer) + "\n";
+
+		std::cout << current_steer << std::endl;
+
+		this->angles_cache.push_back(y);		
+		this->angles_cache = std::vector<torch::Tensor>(this->angles_cache.begin() + 1, this->angles_cache.end());
+
+		this->frames_cache = std::vector<torch::Tensor>(this->frames_cache.begin() + 1, this->frames_cache.end());
+		
+		
   }
 
-  void model_forward(cv::Mat& img){
+  at::Tensor backbone_forward(cv::Mat& img){
 
-    cv::cvtColor(img, img, CV_RGB2GRAY);
-    cv::cvtColor(img, img, CV_GRAY2RGB);
-    
+    cv::cvtColor(img, img, CV_BGR2RGB);
     cv::Rect roi;
 
     int offset_x = 0;
@@ -117,42 +151,33 @@ public:
 
     // 480x640 original
     // 240x640 cut 
-    // ROS_INFO("%d %d", roi.width, roi.height);
+
     img = img(roi);
     cv::resize(img, img, cv::Size(320,120));
     // ROS_INFO("%u %u", img.rows, img.cols);  
     imshow(OPENCV_WINDOW, img);
     
-    // normalizing image to fit torch tensor input format
     img.convertTo(img, CV_32FC3, 1.0/255.0);
-    // imshow(OPENCV_WINDOW, img);
-    // std::cout << img << std::endl;
+ 
 
     auto tensor_image = torch::from_blob(img.data, {1, img.rows, img.cols, img.channels()});
     tensor_image = tensor_image.permute({0,3,1,2});
     
-    // std::cout << tensor_image << std::endl;
 
+		std::vector<double> norm_mean = {0.485, 0.456, 0.406};
+		std::vector<double> norm_std = {0.229, 0.224, 0.225};
+
+		tensor_image = torch::data::transforms::Normalize<>(norm_mean, norm_std)(tensor_image);
+		tensor_image = tensor_image.to(at::kCUDA);
+  
     std::vector<torch::jit::IValue> inputs;
-    torch::Device device(torch::kCUDA);
-    inputs.push_back(tensor_image.to(device));
 
-    // auto out_tensor = tensor_image;
-    // auto s = out_tensor.sizes();
+    inputs.push_back(tensor_image);
     
-    // out_tensor = out_tensor.squeeze().permute({2, 1, 0});
-    
-    // // ROS_INFO("%u %u %u %u", s[0], s[1], s[2], s[3]);
-    // out_tensor = out_tensor.to(torch::kU8);
-    // out_tensor = out_tensor.to(torch::kCPU);
 
-    // cv::Mat resultImg(120, 320, CV_8UC3);
-    // std::memcpy((void *) resultImg.data, out_tensor.data_ptr(), sizeof(torch::kU8) * out_tensor.numel());
-
-    // imshow(OPENCV_WINDOW, resultImg);
+    at::Tensor output = backbone.forward(inputs).toTensor();
     
-    at::Tensor output = module.forward(inputs).toTensor();
-    std::cout << output[0][0].item<float>() << '\n';
+    return output;
 
   }
 
