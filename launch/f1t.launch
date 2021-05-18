@@ -2,9 +2,9 @@
 
   <!-- Launch rosserial -->
 
-  <!-- sudo chmod 777 /dev/ttyUSB0 -->
+  <!-- sudo chmod 777 /dev/ttyACM0 -->
   <node name="arduino_serial_node" pkg="rosserial_python" type="serial_node.py">
-    <param name="port" value="/dev/ttyUSB0" />
+    <param name="port" value="/dev/ttyACM0" />
     <param name="baud" value="57600" />
   </node>
 
@@ -13,16 +13,7 @@
 
   <!-- external imu -->
   <!-- <include file="$(find myahrs_driver)/launch/myahrs_driver.launch" /> -->
+ 
 
-  <!-- main node -->
-  <param name="throttle" value="1455"/>
-  <param name="red_threshold" value="1700000"/>
-  <param name="dev_steer" value="800" />
-  <param name="one_lane_steer" value="100"/>
-  
-  <param name="right_slope" value="0.12"/>
-  <param name="left_slope" value="-0.12"/>
-  
-
-  <node name="image_converter" pkg="f1t" type="image_converter"/>
+  <!-- <node name="model_node" pkg="f1t" type="model_node" output="screen"/> -->
 </launch> 

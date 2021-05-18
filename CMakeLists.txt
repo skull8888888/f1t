@@ -1,3 +1,4 @@
+
 cmake_minimum_required(VERSION 3.0.2)
 project(f1t)
 
@@ -7,6 +8,10 @@ project(f1t)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
+
+
+set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}" ${CMAKE_MODULE_PATH})
+
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
@@ -17,12 +22,16 @@ find_package(catkin REQUIRED COMPONENTS
   message_filters
 )
 
-# rosbuild_link_boost(f1t thread signals system)
+find_package(CUDA REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(TensorRT REQUIRED)
 
-# set(CUDNN_INCLUDE_PATH /usr/local/cuda/include)
-set(Torch_DIR /home/user/Downloads/libtorch/share/cmake/Torch)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")	
 
-find_package(Torch REQUIRED)
+# set(Torch_DIR /home/team7/.local/lib/python3.6/site-packages/torch/share/cmake/Torch)
+
+# find_package(Torch REQUIRED)
+
 
 # download binaries from https://github.com/pytorch/pytorch/issues/17492#issuecomment-524692441
 
@@ -46,17 +55,24 @@ CATKIN_DEPENDS roscpp
 ###########
 
 include_directories(
-  include
+
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
-  ${Torch_INCLUDE_DIRS}
+  ${CUDA_INCLUDE_DIRS} 
+  # ${Torch_INCLUDE_DIRS}
+  ${TensorRT_INCLUDE_DIRS}
 )
 
 add_executable(image_converter src/image_converter.cpp)
 target_link_libraries(image_converter ${OpenCV_LIBS} ${catkin_LIBRARIES})
 
 add_executable(model_node src/model_node.cpp)
-target_link_libraries(model_node ${OpenCV_LIBS} ${TORCH_LIBRARIES} ${catkin_LIBRARIES})
+target_link_libraries(model_node 
+                      ${OpenCV_LIBS} 
+                      # ${TORCH_LIBRARIES} 
+                      ${catkin_LIBRARIES} 
+                      ${CUDA_LIBRARIES} 
+                      ${TensorRT_LIBRARIES})
 
 # catkin_install_python(PROGRAMS
 #   scripts/converter.py

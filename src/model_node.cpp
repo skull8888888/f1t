@@ -16,18 +16,148 @@
 #include <string>
 #include <vector>
 
-#include <torch/data.h>
-#include <torch/script.h>
+// #include <torch/data.h>
+// #include <torch/script.h>
 
 #include <iostream>
 #include <fstream>
 #include <memory>
 
-static const std::string OPENCV_WINDOW = "Image window";
+#include <cuda_runtime_api.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudawarping.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/cudaarithm.hpp>
+#include <cuda_runtime_api.h>
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
 
 int SEQ_L = 8;
 
-std::ofstream myfile;
+// std::ofstream myfile;
+
+class Logger : public nvinfer1::ILogger
+{
+public:
+    void log(Severity severity, const char* msg) override {
+        // remove this 'if' if you need more logged info
+        if ((severity == Severity::kERROR) || (severity == Severity::kINTERNAL_ERROR)) {
+            std::cout << msg << "\n";
+        }
+    }
+} gLogger;
+
+// destroy TensorRT objects if something goes wrong
+struct TRTDestroy
+{
+    template <class T>
+    void operator()(T* obj) const
+    {
+        if (obj)
+        {
+            obj->destroy();
+        }
+    }
+};
+
+template <class T>
+using TRTUniquePtr = std::unique_ptr<T, TRTDestroy>;
+
+// calculate size of tensor
+size_t getSizeByDim(const nvinfer1::Dims& dims)
+{
+    size_t size = 1;
+    for (size_t i = 0; i < dims.nbDims; ++i)
+    {
+        size *= dims.d[i];
+    }
+    return size;
+}
+
+// initialize TensorRT engine and parse ONNX model --------------------------------------------------------------------
+void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine,
+                    TRTUniquePtr<nvinfer1::IExecutionContext>& context)
+{
+    TRTUniquePtr<nvinfer1::IBuilder> builder{nvinfer1::createInferBuilder(gLogger)};
+    TRTUniquePtr<nvinfer1::INetworkDefinition> network{builder->createNetworkV2(1U << static_cast<int>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH))};
+    
+    
+    TRTUniquePtr<nvonnxparser::IParser> parser{nvonnxparser::createParser(*network, gLogger)};
+
+    TRTUniquePtr<nvinfer1::IBuilderConfig> config{builder->createBuilderConfig()};
+    // parse ONNX
+    if (!parser->parseFromFile(model_path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kINFO)))
+    {
+        std::cerr << "ERROR: could not parse the model.\n";
+        return;
+    }
+    // allow TensorRT to use up to 1GB of GPU memory for tactic selection.
+    config->setMaxWorkspaceSize(1ULL << 30);
+    // use FP16 mode if possible
+    if (builder->platformHasFastFp16())
+    {
+        config->setFlag(nvinfer1::BuilderFlag::kFP16);
+    }
+    // we have only one image in batch
+    builder->setMaxBatchSize(1);
+    // generate TensorRT engine optimized for the target platform
+    engine.reset(builder->buildEngineWithConfig(*network, *config));
+    context.reset(engine->createExecutionContext());
+
+
+    ROS_INFO("finished parsing model");
+}
+
+
+void preprocessImage(cv::Mat& frame, float* gpu_input, const nvinfer1::Dims& dims)
+{
+    cv::cuda::GpuMat gpu_frame;
+    // upload image to GPU
+    gpu_frame.upload(frame);
+
+    auto input_width = dims.d[2];
+    auto input_height = dims.d[1];
+    auto channels = dims.d[0];
+    auto input_size = cv::Size(input_width, input_height);
+    // resize
+    cv::cuda::GpuMat resized;
+    cv::cuda::resize(gpu_frame, resized, input_size, 0, 0, cv::INTER_NEAREST);
+    // normalize
+    cv::cuda::GpuMat flt_image;
+    resized.convertTo(flt_image, CV_32FC3, 1.f / 255.f);
+    cv::cuda::subtract(flt_image, cv::Scalar(0.485f, 0.456f, 0.406f), flt_image, cv::noArray(), -1);
+    cv::cuda::divide(flt_image, cv::Scalar(0.229f, 0.224f, 0.225f), flt_image, 1, -1);
+    // to tensor
+    std::vector<cv::cuda::GpuMat> chw;
+    for (size_t i = 0; i < channels; ++i)
+    {
+        chw.emplace_back(cv::cuda::GpuMat(input_size, CV_32FC1, gpu_input + i * input_width * input_height));
+    }
+    cv::cuda::split(flt_image, chw);
+}
+
+  
+void resizeImage(cv::Mat& img){
+
+  cv::cvtColor(img, img, CV_BGR2RGB);
+  cv::Rect roi;
+
+  int offset_x = 0;
+  int offset_y = img.size().height / 2;
+
+  roi.x = offset_x;
+  roi.y = offset_y;
+  roi.width = img.size().width;
+  roi.height = img.size().height - offset_y;
+
+  // 480x640 original
+  // 240x640 cut 
+
+  img = img(roi);
+  cv::resize(img, img, cv::Size(320,120));    
+  
+}
 
 class ModelNode
 {
@@ -35,57 +165,44 @@ class ModelNode
   ros::Subscriber image_sub_;
 
   ros::Publisher steer_pub_;
+  ros::Publisher mode_pub_;
   ros::Publisher throttle_pub_;
 
-  int steer = 0;
+  // std::vector<at::Tensor> frames_cache;
+  // std::vector<at::Tensor> angles_cache;
 
-  std::string model_path;
 
-  torch::jit::script::Module backbone;
-  torch::jit::script::Module decoder;
+
+  TRTUniquePtr<nvinfer1::ICudaEngine> backbone_engine{nullptr};
+  TRTUniquePtr<nvinfer1::IExecutionContext> backbone_context{nullptr};
   
-  std::vector<at::Tensor> frames_cache;
-  std::vector<at::Tensor> angles_cache;
- 
+
 public:
   ModelNode() {
     // Subscribe to input video
     image_sub_ = nh_.subscribe("/camera/color/image_raw/compressed", 1, &ModelNode::imageCb, this);
     
-    steer_pub_ = nh_.advertise<std_msgs::Int16>("car1/auto_cmd/steer",5);
-    throttle_pub_ = nh_.advertise<std_msgs::Int16>("car1/auto_cmd/throttle",5);
+    steer_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/steer",1);
+    throttle_pub_ = nh_.advertise<std_msgs::Int16>("/auto_cmd/throttle",1);
+    mode_pub_ = nh_.advertise<std_msgs::Bool>("/auto_mode",1);
 
-    nh_.getParam("model_path", model_path);
 
-    try {
-
-      torch::Device device(torch::kCUDA);
-
-      backbone = torch::jit::load("/home/user/catkin_ws/src/f1t/backbone_script.pt");
-      
-      backbone.to(device);
-      backbone.eval();
-
-      decoder = torch::jit::load("/home/user/catkin_ws/src/f1t/decoder_script.pt");
-
-      decoder.to(device);
-      decoder.eval();
+    std::string backbone_path = "/home/team7/catkin_ws/src/f1t/backbone.onnx";
+    parseOnnxModel(backbone_path, this->backbone_engine, this->backbone_context);
     
-    }
-    catch (const c10::Error& e) {
-      std::cerr << e.what();
-    }
-    
-    cv::namedWindow(OPENCV_WINDOW);
-    cv::startWindowThread();  
 
-		myfile.open("/home/user/catkin_ws/src/f1t/val_pred.csv");
   }
 
   ~ModelNode()
   {
-    cv::destroyWindow(OPENCV_WINDOW);
-		myfile.close();
+    
+    std_msgs::Bool mode_msg;
+    mode_msg.data = false;
+    
+    mode_pub_.publish(mode_msg);
+      
+    std::cout << "MODE 0" << std::endl;
+//    myfile.close();
   }
 
   void imageCb(const sensor_msgs::CompressedImageConstPtr& msg)
@@ -103,89 +220,91 @@ public:
     }
 
     cv::Mat img = cv_ptr->image;
-    at::Tensor img_emb = backbone_forward(img);
 
-    this->frames_cache.push_back(img_emb.detach());
+    resizeImage(img);
 
-		if(this->frames_cache.size() < SEQ_L){
+    std::vector<nvinfer1::Dims> input_dims; // we expect only one input
+    std::vector<nvinfer1::Dims> output_dims; // and one output
 
-			this->angles_cache.push_back(torch::tensor({0.0}).to(at::kCUDA));
-			return;
-		}
+    // int nbBindings = this->backbone_engine->getNbBindings();
+    // std::cout << nbBindings << std::endl;
 
-		torch::Tensor x = torch::stack(this->frames_cache, 1);
-		torch::Tensor steer_angles = torch::stack(this->angles_cache);
-		steer_angles = torch::transpose(steer_angles, 0,1);
+    std::vector<void*> buffers(this->backbone_engine->getNbBindings()); // buffers for input and output data
 
-		std::vector<torch::jit::IValue> inputs = {x, steer_angles};
-		
-		torch::Tensor y = this->decoder.forward(inputs).toTensor().flatten().detach();
-		y = torch::clamp(y, -1.0, 1.0); 
+    int batch_size = 1;
+    // ROS_INFO("trying to alloc buffers");
+    for (size_t i = 0; i < this->backbone_engine->getNbBindings(); ++i)
+    {
+      auto binding_size = getSizeByDim(this->backbone_engine->getBindingDimensions(i)) * batch_size * sizeof(float);
+      cudaMalloc(&buffers[i], binding_size);
+      if (this->backbone_engine->bindingIsInput(i))
+      {
+          input_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
+      }
+      else
+      {
+          output_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
+      }
+    }
 
-		float current_steer = y.item<float>();
-		
-		myfile << std::to_string(current_steer) + "\n";
+    preprocessImage(img, (float *) buffers[0], input_dims[0]);
+    this->backbone_context->execute(batch_size, buffers.data());
+    
+    
+    // at::Tensor img_emb = backbone_forward(img);
 
-		std::cout << current_steer << std::endl;
+    // this->frames_cache.push_back(img_emb.detach());
 
-		this->angles_cache.push_back(y);		
-		this->angles_cache = std::vector<torch::Tensor>(this->angles_cache.begin() + 1, this->angles_cache.end());
+    // if(this->frames_cache.size() < SEQ_L){
 
-		this->frames_cache = std::vector<torch::Tensor>(this->frames_cache.begin() + 1, this->frames_cache.end());
-		
-		
+    //     this->angles_cache.push_back(torch::tensor({0.0}).to(torch::kCUDA));
+    //     return;
+    // }
+
+    // torch::Tensor x = torch::stack(this->frames_cache, 1);
+    // torch::Tensor steer_angles = torch::stack(this->angles_cache);
+    // steer_angles = torch::transpose(steer_angles, 0,1);
+
+    // std::vector<torch::jit::IValue> inputs = {x, steer_angles};
+
+    // torch::Tensor y = this->decoder.forward(inputs).toTensor().flatten().detach();
+    // y = torch::clamp(y, -1.0, 1.0); 
+
+    // this->angles_cache.push_back(y);
+    // this->angles_cache = std::vector<torch::Tensor>(this->angles_cache.begin() + 1, this->angles_cache.end());
+
+    // this->frames_cache = std::vector<torch::Tensor>(this->frames_cache.begin() + 1, this->frames_cache.end());
+    
+    // //////////////////////////////////////
+    
+    // std_msgs::Bool mode_msg;
+    // mode_msg.data = true;
+    
+    // mode_pub_.publish(mode_msg);
+      
+    int steer = 1500 ;
+    // std::cout << steer << std::endl;
+    
+    std_msgs::Int16 steer_msg;
+    steer_msg.data = steer;
+
+    this->steer_pub_.publish(steer_msg);
+
+
+    // std_msgs::Int16 throttle_msg;
+    // throttle_msg.data = 1465;
+
+    // this->throttle_pub_.publish(throttle_msg);
+      
   }
-
-  at::Tensor backbone_forward(cv::Mat& img){
-
-    cv::cvtColor(img, img, CV_BGR2RGB);
-    cv::Rect roi;
-
-    int offset_x = 0;
-    int offset_y = img.size().height / 2;
-
-    roi.x = offset_x;
-    roi.y = offset_y;
-    roi.width = img.size().width;
-    roi.height = img.size().height - offset_y;
-
-    // 480x640 original
-    // 240x640 cut 
-
-    img = img(roi);
-    cv::resize(img, img, cv::Size(320,120));
-    // ROS_INFO("%u %u", img.rows, img.cols);  
-    imshow(OPENCV_WINDOW, img);
-    
-    img.convertTo(img, CV_32FC3, 1.0/255.0);
- 
-
-    auto tensor_image = torch::from_blob(img.data, {1, img.rows, img.cols, img.channels()});
-    tensor_image = tensor_image.permute({0,3,1,2});
-    
-
-		std::vector<double> norm_mean = {0.485, 0.456, 0.406};
-		std::vector<double> norm_std = {0.229, 0.224, 0.225};
-
-		tensor_image = torch::data::transforms::Normalize<>(norm_mean, norm_std)(tensor_image);
-		tensor_image = tensor_image.to(at::kCUDA);
-  
-    std::vector<torch::jit::IValue> inputs;
-
-    inputs.push_back(tensor_image);
-    
-
-    at::Tensor output = backbone.forward(inputs).toTensor();
-    
-    return output;
-
-  }
+   
 
 };
 
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "model_node");
+
   ModelNode mn;
   ros::spin();
   return 0;
