@@ -19,6 +19,7 @@
 // #include <torch/data.h>
 // #include <torch/script.h>
 
+
 #include <iostream>
 #include <fstream>
 #include <memory>
@@ -31,9 +32,11 @@
 #include <opencv2/cudaarithm.hpp>
 #include <cuda_runtime_api.h>
 #include <NvInfer.h>
+#include <NvInferRuntime.h>
 #include <NvOnnxParser.h>
 
 int SEQ_L = 8;
+int D_MODEL = 512;
 
 // std::ofstream myfile;
 
@@ -75,50 +78,15 @@ size_t getSizeByDim(const nvinfer1::Dims& dims)
     return size;
 }
 
-// initialize TensorRT engine and parse ONNX model --------------------------------------------------------------------
-void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine,
-                    TRTUniquePtr<nvinfer1::IExecutionContext>& context)
-{
-    TRTUniquePtr<nvinfer1::IBuilder> builder{nvinfer1::createInferBuilder(gLogger)};
-    TRTUniquePtr<nvinfer1::INetworkDefinition> network{builder->createNetworkV2(1U << static_cast<int>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH))};
-    
-    
-    TRTUniquePtr<nvonnxparser::IParser> parser{nvonnxparser::createParser(*network, gLogger)};
-
-    TRTUniquePtr<nvinfer1::IBuilderConfig> config{builder->createBuilderConfig()};
-    // parse ONNX
-    if (!parser->parseFromFile(model_path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kINFO)))
-    {
-        std::cerr << "ERROR: could not parse the model.\n";
-        return;
-    }
-    // allow TensorRT to use up to 1GB of GPU memory for tactic selection.
-    config->setMaxWorkspaceSize(1ULL << 30);
-    // use FP16 mode if possible
-    if (builder->platformHasFastFp16())
-    {
-        config->setFlag(nvinfer1::BuilderFlag::kFP16);
-    }
-    // we have only one image in batch
-    builder->setMaxBatchSize(1);
-    // generate TensorRT engine optimized for the target platform
-    engine.reset(builder->buildEngineWithConfig(*network, *config));
-    context.reset(engine->createExecutionContext());
-
-
-    ROS_INFO("finished parsing model");
-}
-
-
 void preprocessImage(cv::Mat& frame, float* gpu_input, const nvinfer1::Dims& dims)
 {
     cv::cuda::GpuMat gpu_frame;
     // upload image to GPU
     gpu_frame.upload(frame);
 
-    auto input_width = dims.d[2];
-    auto input_height = dims.d[1];
-    auto channels = dims.d[0];
+    auto input_width = dims.d[3];
+    auto input_height = dims.d[2];
+    auto channels = dims.d[1];
     auto input_size = cv::Size(input_width, input_height);
     // resize
     cv::cuda::GpuMat resized;
@@ -132,7 +100,7 @@ void preprocessImage(cv::Mat& frame, float* gpu_input, const nvinfer1::Dims& dim
     std::vector<cv::cuda::GpuMat> chw;
     for (size_t i = 0; i < channels; ++i)
     {
-        chw.emplace_back(cv::cuda::GpuMat(input_size, CV_32FC1, gpu_input + i * input_width * input_height));
+      chw.emplace_back(cv::cuda::GpuMat(input_size, CV_32FC1, gpu_input + i * input_width * input_height));
     }
     cv::cuda::split(flt_image, chw);
 }
@@ -159,6 +127,53 @@ void resizeImage(cv::Mat& img){
   
 }
 
+std::vector<int> tokenize(std::vector<float>& cpu_angles){
+
+  std::vector<int> cpu_tokens;
+
+  std::vector<float> bins{-1.1, -0.5, 0.15, 1.1};
+
+  for(auto angle: cpu_angles){
+
+    for(int i=1; i<bins.size(); i++){
+      if(bins[i-1] < angle && angle <= bins[i]) {
+        cpu_tokens.push_back(i);
+        break;
+      }
+    }
+  }
+
+  return cpu_tokens;
+
+}
+
+// initialize TensorRT engine and parse ONNX model --------------------------------------------------------------------
+void loadEngineFromFile(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine,
+                    TRTUniquePtr<nvinfer1::IExecutionContext>& context)
+{
+  
+  std::vector<char> trtModelStream_;
+  size_t size{ 0 };
+  std::ifstream file(model_path, std::ios::binary);
+  
+  if (file.good()) {
+    file.seekg(0, file.end);
+    size = file.tellg();
+    file.seekg(0, file.beg);
+    trtModelStream_.resize(size);
+    file.read(trtModelStream_.data(), size);
+    file.close();
+  }
+
+  TRTUniquePtr<nvinfer1::IRuntime> runtime{nvinfer1::createInferRuntime(gLogger)};
+
+  // TRTUniquePtr<nvinfer1::ICudaEngine> engine{runtime->deserializeCudaEngine(trtModelStream_.data(), size)};
+
+  engine.reset(runtime->deserializeCudaEngine(trtModelStream_.data(), size));
+  context.reset(engine->createExecutionContext());
+  ROS_INFO("finished loading model");
+}
+
 class ModelNode
 {
   ros::NodeHandle nh_;
@@ -168,15 +183,17 @@ class ModelNode
   ros::Publisher mode_pub_;
   ros::Publisher throttle_pub_;
 
-  // std::vector<at::Tensor> frames_cache;
+  std::vector<std::vector<float>> frames_cache;
+  std::vector<float> cpu_angles_cache;
   // std::vector<at::Tensor> angles_cache;
-
-
 
   TRTUniquePtr<nvinfer1::ICudaEngine> backbone_engine{nullptr};
   TRTUniquePtr<nvinfer1::IExecutionContext> backbone_context{nullptr};
   
 
+  TRTUniquePtr<nvinfer1::ICudaEngine> decoder_engine{nullptr};
+  TRTUniquePtr<nvinfer1::IExecutionContext> decoder_context{nullptr};
+  
 public:
   ModelNode() {
     // Subscribe to input video
@@ -187,9 +204,9 @@ public:
     mode_pub_ = nh_.advertise<std_msgs::Bool>("/auto_mode",1);
 
 
-    std::string backbone_path = "/home/team7/catkin_ws/src/f1t/backbone.onnx";
-    parseOnnxModel(backbone_path, this->backbone_engine, this->backbone_context);
-    
+    loadEngineFromFile("/home/team7/catkin_ws/src/f1t/backbone.engine", this->backbone_engine, this->backbone_context);
+    loadEngineFromFile("/home/team7/catkin_ws/src/f1t/decoder.engine", this->decoder_engine, this->decoder_context);
+
 
   }
 
@@ -201,8 +218,100 @@ public:
     
     mode_pub_.publish(mode_msg);
       
+    // for(float * buf: this->frames_cache){
+    //   cudaFree(buf);
+    // }
+    
     std::cout << "MODE 0" << std::endl;
 //    myfile.close();
+  }
+
+  void backboneForward(cv::Mat& img, std::vector<void*>& buffers){
+
+    std::vector<nvinfer1::Dims> input_dims; // we expect only one input
+    std::vector<nvinfer1::Dims> output_dims; // and one output
+
+    int batch_size = 1;
+    
+    for (size_t i = 0; i < this->backbone_engine->getNbBindings(); ++i)
+    {
+      auto binding_size = getSizeByDim(this->backbone_engine->getBindingDimensions(i)) * batch_size * sizeof(float);
+      cudaMalloc(&buffers[i], binding_size);
+
+      if (this->backbone_engine->bindingIsInput(i))
+      {
+        input_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
+      }
+      else
+      {
+        output_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
+      }
+    }
+
+    preprocessImage(img, static_cast<float *>(buffers[0]), input_dims[0]);
+
+    this->backbone_context->execute(batch_size, buffers.data());
+
+    
+
+  }
+
+  float decoderForward(){
+    std::vector<void*> buffers(this->decoder_engine->getNbBindings());
+
+    std::vector<nvinfer1::Dims> input_dims; // x: (1, SEQ_L, d_model), y: (1, SEQ_L - 1)
+    std::vector<nvinfer1::Dims> output_dims; // x: (1, )
+
+    int batch_size = 1;
+    
+    for (size_t i = 0; i < this->decoder_engine->getNbBindings(); ++i)
+    {
+
+      auto binding_size = getSizeByDim(this->decoder_engine->getBindingDimensions(i)) * batch_size * sizeof(float);
+      
+      cudaMalloc(&buffers[i], binding_size);
+
+      if (this->decoder_engine->bindingIsInput(i))
+      {
+        input_dims.emplace_back(this->decoder_engine->getBindingDimensions(i));
+      }
+      else
+      {
+          output_dims.emplace_back(this->decoder_engine->getBindingDimensions(i));
+      }
+    }
+
+    // copying cached backbone outputs to first input buffer of decoder
+
+    std::vector<float> frames_cache_flatten(getSizeByDim(input_dims[0]));
+
+    for (int i = 0; i < this->frames_cache.size(); i++) {
+      
+      for (int j = 0; j < D_MODEL; j++){
+        // std::cout << frames_cache[i][j] << std::endl;
+        frames_cache_flatten[i*D_MODEL + j] = frames_cache[i][j];
+
+      }
+
+    }
+    
+    cudaMemcpy(buffers[0], frames_cache_flatten.data(), getSizeByDim(input_dims[0]) * sizeof(float), cudaMemcpyHostToDevice);
+    
+    auto cpu_tokens = tokenize(this->cpu_angles_cache);
+
+    cudaMemcpy(buffers[1], cpu_tokens.data(), getSizeByDim(input_dims[1]) * sizeof(int), cudaMemcpyHostToDevice);
+    
+    this->decoder_context->execute(batch_size, buffers.data());
+
+    std::vector<float> pred_angle_buffer(getSizeByDim(output_dims[0]));
+    cudaMemcpy(pred_angle_buffer.data(), buffers[2], getSizeByDim(output_dims[0]) * sizeof(float), cudaMemcpyDeviceToHost);
+
+    for( void * buf: buffers){
+      cudaFree(buf);
+    }
+
+    return pred_angle_buffer[0];
+
   }
 
   void imageCb(const sensor_msgs::CompressedImageConstPtr& msg)
@@ -223,34 +332,34 @@ public:
 
     resizeImage(img);
 
-    std::vector<nvinfer1::Dims> input_dims; // we expect only one input
-    std::vector<nvinfer1::Dims> output_dims; // and one output
+    std::vector<void*> backbone_buffers(this->backbone_engine->getNbBindings()); // buffers for input and output data
 
-    // int nbBindings = this->backbone_engine->getNbBindings();
-    // std::cout << nbBindings << std::endl;
+    backboneForward(img, backbone_buffers);
 
-    std::vector<void*> buffers(this->backbone_engine->getNbBindings()); // buffers for input and output data
+    std::vector<float> cpu_output(D_MODEL);
+    cudaMemcpy(cpu_output.data(), backbone_buffers[1], cpu_output.size() * sizeof(float), cudaMemcpyDeviceToHost);
 
-    int batch_size = 1;
-    // ROS_INFO("trying to alloc buffers");
-    for (size_t i = 0; i < this->backbone_engine->getNbBindings(); ++i)
-    {
-      auto binding_size = getSizeByDim(this->backbone_engine->getBindingDimensions(i)) * batch_size * sizeof(float);
-      cudaMalloc(&buffers[i], binding_size);
-      if (this->backbone_engine->bindingIsInput(i))
-      {
-          input_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
-      }
-      else
-      {
-          output_dims.emplace_back(this->backbone_engine->getBindingDimensions(i));
-      }
+    this->frames_cache.push_back(cpu_output);
+
+    if(this->frames_cache.size() < SEQ_L) {
+       std::cout << "pred angle " << 0.0 << std::endl;
+      this->cpu_angles_cache.push_back(0.0);
+      return;
     }
 
-    preprocessImage(img, (float *) buffers[0], input_dims[0]);
-    this->backbone_context->execute(batch_size, buffers.data());
+    float pred_angle = decoderForward();
+
+    std::cout << "pred angle " << pred_angle << std::endl;
+
+    this->cpu_angles_cache.push_back(pred_angle);
+    this->cpu_angles_cache = std::vector<float>(this->cpu_angles_cache.begin() + 1, this->cpu_angles_cache.end());
+
+    this->frames_cache = std::vector<std::vector<float>>(this->frames_cache.begin() + 1, this->frames_cache.end());
     
-    
+    for(auto buf: backbone_buffers){
+      cudaFree(buf);
+    }
+
     // at::Tensor img_emb = backbone_forward(img);
 
     // this->frames_cache.push_back(img_emb.detach());
@@ -270,11 +379,6 @@ public:
     // torch::Tensor y = this->decoder.forward(inputs).toTensor().flatten().detach();
     // y = torch::clamp(y, -1.0, 1.0); 
 
-    // this->angles_cache.push_back(y);
-    // this->angles_cache = std::vector<torch::Tensor>(this->angles_cache.begin() + 1, this->angles_cache.end());
-
-    // this->frames_cache = std::vector<torch::Tensor>(this->frames_cache.begin() + 1, this->frames_cache.end());
-    
     // //////////////////////////////////////
     
     // std_msgs::Bool mode_msg;
